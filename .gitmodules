@@ -1,0 +1,20 @@
+[submodule "vendor/emilkowalski--skill"]
+	path = vendor/emilkowalski--skill
+	url = https://github.com/emilkowalski/skill.git
+	shallow = true
+[submodule "vendor/GoogleChrome--modern-web-guidance"]
+	path = vendor/GoogleChrome--modern-web-guidance
+	url = https://github.com/GoogleChrome/modern-web-guidance.git
+	shallow = true
+[submodule "vendor/vojtaholik--good-css"]
+	path = vendor/vojtaholik--good-css
+	url = https://github.com/vojtaholik/good-css.git
+	shallow = true
+[submodule "vendor/shadcn--improve"]
+	path = vendor/shadcn--improve
+	url = https://github.com/shadcn/improve.git
+	shallow = true
+[submodule "vendor/squirrelscan--skills"]
+	path = vendor/squirrelscan--skills
+	url = https://github.com/squirrelscan/skills.git
+	shallow = true

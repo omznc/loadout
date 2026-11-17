@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Print the other Claude sessions that work in the same git repository.
+# Use: SessionStart hook (reads hook JSON on stdin) or run by hand.
+# The output goes to the context of Claude. No output means no peer.
+
+cwd=""
+if [ ! -t 0 ]; then
+  cwd=$(jq -r '.cwd // empty' 2>/dev/null)
+fi
+[ -n "$cwd" ] || cwd=$PWD
+
+common() { git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null; }
+mine=$(common "$cwd")
+[ -n "$mine" ] || exit 0
+
+# Collect the process ids of this process and all of its parents.
+self=" "
+p=$$
+while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+  self="$self$p "
+  p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+done
+
+# macOS has no /proc, and an npm install of claude runs as "node".
+if [ -d /proc/self ]; then
+  pids() { pgrep -x claude; }
+  cwd_of() { readlink "/proc/$1/cwd" 2>/dev/null; }
+else
+  pids() { pgrep -x claude; pgrep -f '/bin/claude( |$)'; }
+  cwd_of() { lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'; }
+fi
+
+out=""
+for pid in $(pids | sort -u); do
+  case "$self" in *" $pid "*) continue ;; esac
+  d=$(cwd_of "$pid") || continue
+  [ -n "$d" ] || continue
+  [ "$(common "$d")" = "$mine" ] || continue
+  out="$out- pid $pid in $d"$'\n'
+done
+
+[ -n "$out" ] || exit 0
+printf 'Other Claude sessions work in this repository:\n%s' "$out"
+printf 'Tell the user about them. Before you edit, send each session a message with the files you will change. Use a worktree if git status shows changes that you did not make.\n'

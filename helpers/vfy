@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# vfy - run the check scripts of a JavaScript project and print PASS or FAIL.
+# It uses only the git root of the current directory.
+set -uo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: vfy
+
+Find the git root. Find the package manager from the lockfile:
+bun.lock or bun.lockb -> bun, pnpm-lock.yaml -> pnpm, else npm.
+Run each script that exists in package.json, in this order:
+typecheck, check-types, check, lint.
+Show the last 40 lines of each run. Print one PASS or FAIL line
+per script. Exit not 0 if any script fails.
+
+Example:
+  vfy
+USAGE
+}
+
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "vfy: not in a git repository" >&2; exit 1; }
+pj="$root/package.json"
+[ -f "$pj" ] || { echo "vfy: no package.json in $root" >&2; exit 1; }
+
+if [ -f "$root/bun.lock" ] || [ -f "$root/bun.lockb" ]; then pm=bun
+elif [ -f "$root/pnpm-lock.yaml" ]; then pm=pnpm
+else pm=npm; fi
+
+summary=(); rc=0; ran=0
+for s in typecheck check-types check lint; do
+  has=$(jq -r --arg s "$s" '.scripts[$s] // empty' "$pj")
+  [ -n "$has" ] || continue
+  # Skip a script that writes to files. This helper must only read.
+  case "$has" in
+    *--write*|*--fix*|*" -w"*) summary+=("SKIP $s (script writes files)"); continue ;;
+  esac
+  ran=1
+  echo "== $pm run $s"
+  ( cd "$root" && "$pm" run "$s" 2>&1 | tail -40; exit "${PIPESTATUS[0]}" )
+  if [ $? -eq 0 ]; then summary+=("PASS $s"); else summary+=("FAIL $s"); rc=1; fi
+done
+
+[ "$ran" -eq 1 ] || { echo "vfy: no matching script in package.json"; exit 1; }
+echo "== summary ($pm)"
+printf '%s\n' "${summary[@]}"
+exit $rc

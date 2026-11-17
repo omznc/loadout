@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# pr-wait - wait for the checks of a pull request and print a short summary.
+# Exit code 0 only if all checks pass.
+set -uo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: pr-wait [PR] [--fail-fast]
+
+Wait for the checks of a pull request. Print the pass, fail, and
+pending counts. Print the name and URL of each failed check.
+Without PR, use the pull request of the current branch.
+
+Options:
+  --fail-fast   Stop the wait when the first check fails.
+
+Exit code: 0 if all checks pass. Else not 0.
+
+Example:
+  pr-wait 123 --fail-fast
+USAGE
+}
+
+pr=""; ff=()
+for a in "$@"; do
+  case "$a" in
+    -h|--help) usage; exit 0 ;;
+    --fail-fast) ff=(--fail-fast) ;;
+    -*) echo "pr-wait: unknown option: $a" >&2; usage; exit 1 ;;
+    *) pr=$a ;;
+  esac
+done
+
+# Right after a push, GitHub reports no checks for a short time. Wait for
+# them (up to 3 minutes), else --watch ends at once and the PR looks done.
+for _ in $(seq 18); do
+  gh pr checks ${pr:+"$pr"} --json name 2>/dev/null | jq -e 'length > 0' >/dev/null && break
+  sleep 10
+done
+
+gh pr checks ${pr:+"$pr"} --watch --interval 20 "${ff[@]}" >/dev/null 2>&1
+
+json=$(gh pr checks ${pr:+"$pr"} --json name,bucket,link 2>&1) || {
+  echo "pr-wait: cannot read the checks: $json" >&2
+  exit 1
+}
+total=$(jq 'length' <<<"$json")
+if [ "$total" -eq 0 ]; then
+  echo "pr-wait: no checks found."
+  exit 1
+fi
+pass=$(jq '[.[]|select(.bucket=="pass")]|length' <<<"$json")
+fail=$(jq '[.[]|select(.bucket=="fail")]|length' <<<"$json")
+pend=$(jq '[.[]|select(.bucket=="pending")]|length' <<<"$json")
+other=$((total - pass - fail - pend))
+echo "pass=$pass fail=$fail pending=$pend other=$other (skipped or cancelled)"
+jq -r '.[]|select(.bucket=="fail")|"FAILED: \(.name) \(.link)"' <<<"$json"
+[ "$fail" -eq 0 ] && [ "$pend" -eq 0 ]

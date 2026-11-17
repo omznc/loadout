@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""PreToolUse hook that refuses Bash and Agent calls that break the CLAUDE.md rules.
+
+Usage: bash-guard (hook JSON on stdin) | bash-guard --self-test
+Add "# guard:ok" to a Bash command to skip the check for that command.
+On any error, the guard exits 0 with no output.
+"""
+import json
+import re
+import sys
+
+SLEEP = re.compile(r"\bsleep\s+([2-9]|\d{2,})")
+BASH_RULES = [
+    (re.compile(r"^\s*cd\s+[^;&|]+&&"),
+     "Do not start a command with `cd <dir> &&`. The working directory persists. Use absolute paths, or a flag such as `--cwd` or `git -C`."),
+    (re.compile(r"(^|[;&]\s*)sed\s+-n\s"),
+     "Do not use `sed -n` to read a file. Use the Read tool with offset and limit."),
+    (SLEEP,
+     "Do not use `sleep` to wait. Use Monitor with an until-loop, or `run_in_background` and wait for the notification."),
+    (re.compile(r"(^|[;&|]\s*)grep\s+(-\w*r|--recursive)"),
+     "Do not use `grep -r`. Use `rg -n -g '*.ext' \"pattern\"`, with the glob in quotes."),
+]
+HEREDOC_EDIT = re.compile(r"\b(python3?|uv run[^<]*|bun|node)\b[^\n]*<<")
+WRITES = re.compile(r"write_text|\.write\(|writeFileSync|Bun\.write|open\([^)]*['\"]w")
+REPLACES = re.compile(r"\.replace\(|re\.sub\(|replaceAll\(")
+
+
+def bash_reason(cmd, background):
+    if "# guard:ok" in cmd:
+        return None
+    for pat, reason in BASH_RULES:
+        if pat is SLEEP and background:
+            continue
+        if pat.search(cmd):
+            return reason
+    if HEREDOC_EDIT.search(cmd) and WRITES.search(cmd) and REPLACES.search(cmd):
+        return "Do not edit a file with a script heredoc. Use the Edit tool. A shell edit cannot be undone with /rewind."
+    return None
+
+
+def agent_reason(inp):
+    if inp.get("subagent_type") == "worker" and inp.get("model") in ("opus", "fable"):
+        return "Do not override the model of a `worker`. It runs on Sonnet. Use `general-purpose` if the task needs heavy reasoning."
+    return None
+
+
+def decide(data):
+    tool, inp = data.get("tool_name"), data.get("tool_input") or {}
+    if tool == "Bash":
+        return bash_reason(inp.get("command") or "", bool(inp.get("run_in_background")))
+    if tool == "Agent":
+        return agent_reason(inp)
+    return None
+
+
+def self_test():
+    deny = [
+        "cd /home/x/repo && bun run build",
+        "sed -n '1,40p' src/a.ts",
+        "cd x; sed -n 5,9p f",
+        "sleep 30; curl -s localhost:3000",
+        "grep -rn foo src",
+        "python3 - <<'EOF'\np='a';s=open(p).read().replace('x','y');open(p,'w').write(s)\nEOF",
+    ]
+    allow = [
+        "bun run build 2>&1 | tail -n 40",
+        "git log --oneline | sed -n '1,5p'",
+        "rg -n -g '*.ts' foo",
+        "sleep 1",
+        "python3 - <<'EOF'\nimport json;print(json.load(open('a.json')))\nEOF",
+        "cd /x && make  # guard:ok",
+        "echo 'cd a && b'",
+    ]
+    for c in deny:
+        assert bash_reason(c, False), c
+    for c in allow:
+        assert not bash_reason(c, False), c
+    assert not bash_reason("sleep 30; curl x", True)
+    assert agent_reason({"subagent_type": "worker", "model": "opus"})
+    assert not agent_reason({"subagent_type": "worker"})
+    assert not agent_reason({"subagent_type": "general-purpose", "model": "opus"})
+    print("ok")
+
+
+def main():
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    try:
+        reason = decide(json.load(sys.stdin))
+    except Exception:
+        return
+    if reason:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }}))
+
+
+main()
